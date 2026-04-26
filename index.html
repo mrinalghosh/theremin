@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Theremin</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #0b0d12;
+    color: #e8ecf1;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    user-select: none;
+  }
+  #stage {
+    position: fixed;
+    inset: 0;
+    cursor: crosshair;
+  }
+  #xLabel {
+    position: fixed;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 14px;
+    letter-spacing: 0.1em;
+    color: #8a93a3;
+  }
+  #yLabel {
+    position: fixed;
+    top: 50%;
+    left: 12px;
+    transform: translateY(-50%) rotate(-90deg);
+    transform-origin: left center;
+    font-size: 14px;
+    letter-spacing: 0.1em;
+    color: #8a93a3;
+  }
+  #readout {
+    position: fixed;
+    top: 12px;
+    right: 16px;
+    font-variant-numeric: tabular-nums;
+    font-size: 14px;
+    color: #cfd6e2;
+    text-align: right;
+    line-height: 1.5;
+  }
+  #help {
+    position: fixed;
+    top: 12px;
+    left: 16px;
+    font-size: 13px;
+    color: #8a93a3;
+    line-height: 1.5;
+  }
+  #help kbd {
+    background: #1c2230;
+    border: 1px solid #2a3245;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 12px;
+    color: #cfd6e2;
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(11, 13, 18, 0.85);
+    font-size: 18px;
+    color: #cfd6e2;
+    cursor: pointer;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+<canvas id="stage"></canvas>
+<div id="xLabel">Frequency  →  (X axis)</div>
+<div id="yLabel">Volume  →  (Y axis)</div>
+<div id="help">
+  <div><kbd>Space</kbd> lock point</div>
+  <div><kbd>Delete</kbd> clear all</div>
+</div>
+<div id="readout">
+  <div id="freqOut">— Hz</div>
+  <div id="volOut">— %</div>
+  <div id="countOut">0 locked</div>
+</div>
+<div id="overlay">click anywhere to start</div>
+
+<script>
+(() => {
+  const MIN_FREQ = 80;
+  const MAX_FREQ = 1200;
+  const MAX_GAIN = 0.25;
+
+  const canvas = document.getElementById('stage');
+  const ctx = canvas.getContext('2d');
+  const freqOut = document.getElementById('freqOut');
+  const volOut = document.getElementById('volOut');
+  const countOut = document.getElementById('countOut');
+  const overlay = document.getElementById('overlay');
+
+  let W = 0, H = 0;
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Map x in [0, W] to frequency (logarithmic feels more musical)
+  function xToFreq(x) {
+    const t = Math.max(0, Math.min(1, x / W));
+    return MIN_FREQ * Math.pow(MAX_FREQ / MIN_FREQ, t);
+  }
+  // Map y in [0, H] to gain (top = loud, bottom = quiet)
+  function yToGain(y) {
+    const t = Math.max(0, Math.min(1, 1 - y / H));
+    return t * MAX_GAIN;
+  }
+  function yToVolPct(y) {
+    return Math.round(Math.max(0, Math.min(1, 1 - y / H)) * 100);
+  }
+  function freqToX(f) {
+    const t = Math.log(f / MIN_FREQ) / Math.log(MAX_FREQ / MIN_FREQ);
+    return t * W;
+  }
+  function gainToY(g) {
+    return (1 - g / MAX_GAIN) * H;
+  }
+
+  let audioCtx = null;
+  let masterGain = null;
+  let liveOsc = null;
+  let liveGain = null;
+  let mouseX = W / 2;
+  let mouseY = H / 2;
+  let mouseInside = false;
+  const lockedPoints = []; // { freq, gain, osc, gainNode, x, y }
+
+  function startAudio() {
+    if (audioCtx) return;
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 1;
+    masterGain.connect(audioCtx.destination);
+
+    liveGain = audioCtx.createGain();
+    liveGain.gain.value = 0;
+    liveGain.connect(masterGain);
+
+    liveOsc = audioCtx.createOscillator();
+    liveOsc.type = 'sine';
+    liveOsc.frequency.value = xToFreq(mouseX);
+    liveOsc.connect(liveGain);
+    liveOsc.start();
+  }
+
+  function updateLive() {
+    if (!audioCtx) return;
+    const targetFreq = xToFreq(mouseX);
+    const targetGain = mouseInside ? yToGain(mouseY) : 0;
+    const t = audioCtx.currentTime;
+    liveOsc.frequency.setTargetAtTime(targetFreq, t, 0.01);
+    liveGain.gain.setTargetAtTime(targetGain, t, 0.02);
+  }
+
+  function lockPoint() {
+    if (!audioCtx || !mouseInside) return;
+    const freq = xToFreq(mouseX);
+    const gain = yToGain(mouseY);
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    const g = audioCtx.createGain();
+    g.gain.value = gain;
+    osc.connect(g);
+    g.connect(masterGain);
+    osc.start();
+    lockedPoints.push({ freq, gain, osc, gainNode: g, x: mouseX, y: mouseY });
+  }
+
+  function clearPoints() {
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    for (const p of lockedPoints) {
+      p.gainNode.gain.setTargetAtTime(0, t, 0.02);
+      p.osc.stop(t + 0.2);
+    }
+    lockedPoints.length = 0;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Grid
+    ctx.strokeStyle = 'rgba(138, 147, 163, 0.08)';
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 10; i++) {
+      const x = (i / 10) * W;
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+    }
+    for (let i = 1; i < 6; i++) {
+      const y = (i / 6) * H;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+
+    // Frequency tick labels
+    ctx.fillStyle = 'rgba(138, 147, 163, 0.5)';
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'center';
+    [100, 200, 400, 800].forEach(f => {
+      const x = freqToX(f);
+      ctx.fillText(f + ' Hz', x, H - 28);
+    });
+
+    // Locked points
+    for (const p of lockedPoints) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = '#5fb3ff';
+      ctx.fill();
+      ctx.strokeStyle = '#0b0d12';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Live cursor crosshair
+    if (mouseInside && audioCtx) {
+      ctx.strokeStyle = 'rgba(255, 180, 100, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(mouseX, 0); ctx.lineTo(mouseX, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, mouseY); ctx.lineTo(W, mouseY); ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(mouseX, mouseY, 10, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffb464';
+      ctx.fill();
+    }
+
+    requestAnimationFrame(draw);
+  }
+  requestAnimationFrame(draw);
+
+  function updateReadout() {
+    if (mouseInside) {
+      freqOut.textContent = Math.round(xToFreq(mouseX)) + ' Hz';
+      volOut.textContent = yToVolPct(mouseY) + ' %';
+    } else {
+      freqOut.textContent = '— Hz';
+      volOut.textContent = '— %';
+    }
+    countOut.textContent = lockedPoints.length + ' locked';
+  }
+
+  window.addEventListener('mousemove', e => {
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    mouseInside = true;
+    updateLive();
+    updateReadout();
+  });
+  window.addEventListener('mouseleave', () => {
+    mouseInside = false;
+    updateLive();
+    updateReadout();
+  });
+  window.addEventListener('mouseenter', () => {
+    mouseInside = true;
+    updateLive();
+    updateReadout();
+  });
+
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      lockPoint();
+      updateReadout();
+    } else if (e.code === 'Delete' || e.code === 'Backspace') {
+      e.preventDefault();
+      clearPoints();
+      updateReadout();
+    }
+  });
+
+  overlay.addEventListener('click', () => {
+    startAudio();
+    overlay.style.display = 'none';
+    updateReadout();
+  });
+})();
+</script>
+</body>
+</html>
