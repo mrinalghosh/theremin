@@ -85,10 +85,12 @@
 <div id="help">
   <div><kbd>Space</kbd> lock point</div>
   <div><kbd>Delete</kbd> clear all</div>
+  <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
 </div>
 <div id="readout">
   <div id="freqOut">— Hz</div>
   <div id="volOut">— %</div>
+  <div id="waveOut">sine</div>
   <div id="countOut">0 locked</div>
 </div>
 <div id="overlay">click anywhere to start</div>
@@ -104,6 +106,7 @@
   const freqOut = document.getElementById('freqOut');
   const volOut = document.getElementById('volOut');
   const countOut = document.getElementById('countOut');
+  const waveOut = document.getElementById('waveOut');
   const overlay = document.getElementById('overlay');
 
   let W = 0, H = 0;
@@ -148,7 +151,15 @@
   let mouseX = W / 2;
   let mouseY = H / 2;
   let mouseInside = false;
-  const lockedPoints = []; // { freq, gain, osc, gainNode, x, y }
+  const WAVE_TYPES = ['sine', 'square', 'sawtooth', 'triangle'];
+  const WAVE_COLORS = {
+    sine: '#5fb3ff',
+    square: '#ff7e7e',
+    sawtooth: '#ffd166',
+    triangle: '#7be495',
+  };
+  let currentWave = 'sine';
+  const lockedPoints = []; // { freq, gain, osc, gainNode, x, y, type }
 
   function startAudio() {
     if (audioCtx) return;
@@ -162,7 +173,7 @@
     liveGain.connect(masterGain);
 
     liveOsc = audioCtx.createOscillator();
-    liveOsc.type = 'sine';
+    liveOsc.type = currentWave;
     liveOsc.frequency.value = xToFreq(mouseX);
     liveOsc.connect(liveGain);
     liveOsc.start();
@@ -181,15 +192,16 @@
     if (!audioCtx || !mouseInside) return;
     const freq = xToFreq(mouseX);
     const gain = yToGain(mouseY);
+    const type = currentWave;
     const osc = audioCtx.createOscillator();
-    osc.type = 'sine';
+    osc.type = type;
     osc.frequency.value = freq;
     const g = audioCtx.createGain();
     g.gain.value = gain;
     osc.connect(g);
     g.connect(masterGain);
     osc.start();
-    lockedPoints.push({ freq, gain, osc, gainNode: g, x: mouseX, y: mouseY });
+    lockedPoints.push({ freq, gain, osc, gainNode: g, x: mouseX, y: mouseY, type });
   }
 
   function clearPoints() {
@@ -231,7 +243,7 @@
     for (const p of lockedPoints) {
       ctx.beginPath();
       ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-      ctx.fillStyle = '#5fb3ff';
+      ctx.fillStyle = WAVE_COLORS[p.type] || '#5fb3ff';
       ctx.fill();
       ctx.strokeStyle = '#0b0d12';
       ctx.lineWidth = 2;
@@ -264,6 +276,8 @@
       volOut.textContent = '— %';
     }
     countOut.textContent = lockedPoints.length + ' locked';
+    waveOut.textContent = currentWave;
+    waveOut.style.color = WAVE_COLORS[currentWave];
   }
 
   window.addEventListener('mousemove', e => {
@@ -293,6 +307,14 @@
     } else if (k === 'Delete' || k === 'Backspace') {
       e.preventDefault();
       clearPoints();
+      updateReadout();
+    } else if (k >= '1' && k <= '4') {
+      e.preventDefault();
+      const idx = parseInt(k, 10) - 1;
+      currentWave = WAVE_TYPES[idx];
+      if (liveOsc) {
+        try { liveOsc.type = currentWave; } catch (_) {}
+      }
       updateReadout();
     }
   }
