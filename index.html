@@ -83,14 +83,16 @@
 <div id="xLabel">Frequency  →  (X axis)</div>
 <div id="yLabel">Volume  →  (Y axis)</div>
 <div id="help">
-  <div><kbd>Space</kbd> lock point</div>
-  <div><kbd>Delete</kbd> clear all</div>
+  <div><kbd>Click</kbd> lock point</div>
+  <div><kbd>Space</kbd> mute toggle</div>
+  <div><kbd>Delete</kbd> remove last point</div>
   <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
 </div>
 <div id="readout">
   <div id="freqOut">— Hz</div>
   <div id="volOut">— %</div>
   <div id="waveOut">sine</div>
+  <div id="muteOut"></div>
   <div id="countOut">0 locked</div>
 </div>
 <div id="overlay">click anywhere to start</div>
@@ -107,6 +109,7 @@
   const volOut = document.getElementById('volOut');
   const countOut = document.getElementById('countOut');
   const waveOut = document.getElementById('waveOut');
+  const muteOut = document.getElementById('muteOut');
   const overlay = document.getElementById('overlay');
 
   let W = 0, H = 0;
@@ -159,13 +162,14 @@
     triangle: '#7be495',
   };
   let currentWave = 'sine';
+  let muted = false;
   const lockedPoints = []; // { freq, gain, osc, gainNode, x, y, type }
 
   function startAudio() {
     if (audioCtx) return;
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     masterGain = audioCtx.createGain();
-    masterGain.gain.value = 1;
+    masterGain.gain.value = muted ? 0 : 1;
     masterGain.connect(audioCtx.destination);
 
     liveGain = audioCtx.createGain();
@@ -204,15 +208,15 @@
     lockedPoints.push({ freq, gain, osc, gainNode: g, x: mouseX, y: mouseY, type });
   }
 
-  function clearPoints() {
-    if (!audioCtx) return;
+  function deleteLastPoint() {
+    const p = lockedPoints.pop();
+    if (!p || !audioCtx) return;
     const t = audioCtx.currentTime;
-    const points = lockedPoints.splice(0);
-    for (const p of points) {
-      try { p.gainNode.gain.cancelScheduledValues(t); } catch (_) {}
-      try { p.gainNode.gain.setTargetAtTime(0, t, 0.02); } catch (_) {}
-      try { p.osc.stop(t + 0.2); } catch (_) {}
-    }
+    try { p.gainNode.gain.cancelScheduledValues(t); } catch (_) {}
+    try { p.gainNode.gain.setValueAtTime(0, t); } catch (_) {}
+    try { p.osc.stop(t); } catch (_) {}
+    try { p.osc.disconnect(); } catch (_) {}
+    try { p.gainNode.disconnect(); } catch (_) {}
   }
 
   function draw() {
@@ -278,6 +282,8 @@
     countOut.textContent = lockedPoints.length + ' locked';
     waveOut.textContent = currentWave;
     waveOut.style.color = WAVE_COLORS[currentWave];
+    muteOut.textContent = muted ? 'MUTED' : '';
+    muteOut.style.color = '#ff7e7e';
   }
 
   window.addEventListener('mousemove', e => {
@@ -298,15 +304,24 @@
     updateReadout();
   });
 
+  function toggleMute() {
+    muted = !muted;
+    if (audioCtx && masterGain) {
+      const t = audioCtx.currentTime;
+      try { masterGain.gain.cancelScheduledValues(t); } catch (_) {}
+      try { masterGain.gain.setTargetAtTime(muted ? 0 : 1, t, 0.02); } catch (_) {}
+    }
+  }
+
   function handleKey(e) {
     const k = e.key;
     if (k === ' ' || e.code === 'Space') {
       e.preventDefault();
-      lockPoint();
+      toggleMute();
       updateReadout();
     } else if (k === 'Delete' || k === 'Backspace') {
       e.preventDefault();
-      clearPoints();
+      deleteLastPoint();
       updateReadout();
     } else if (k >= '1' && k <= '4') {
       e.preventDefault();
@@ -323,6 +338,16 @@
   overlay.addEventListener('click', () => {
     startAudio();
     overlay.style.display = 'none';
+    updateReadout();
+  });
+
+  canvas.addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    if (!audioCtx) return;
+    mouseX = e.clientX;
+    mouseY = e.clientY;
+    mouseInside = true;
+    lockPoint();
     updateReadout();
   });
 })();
