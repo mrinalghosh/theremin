@@ -195,11 +195,12 @@
   function clearPoints() {
     if (!audioCtx) return;
     const t = audioCtx.currentTime;
-    for (const p of lockedPoints) {
-      p.gainNode.gain.setTargetAtTime(0, t, 0.02);
-      p.osc.stop(t + 0.2);
+    const points = lockedPoints.splice(0);
+    for (const p of points) {
+      try { p.gainNode.gain.cancelScheduledValues(t); } catch (_) {}
+      try { p.gainNode.gain.setTargetAtTime(0, t, 0.02); } catch (_) {}
+      try { p.osc.stop(t + 0.2); } catch (_) {}
     }
-    lockedPoints.length = 0;
   }
 
   function draw() {
@@ -283,17 +284,19 @@
     updateReadout();
   });
 
-  window.addEventListener('keydown', e => {
-    if (e.code === 'Space') {
+  function handleKey(e) {
+    const k = e.key;
+    if (k === ' ' || e.code === 'Space') {
       e.preventDefault();
       lockPoint();
       updateReadout();
-    } else if (e.code === 'Delete' || e.code === 'Backspace') {
+    } else if (k === 'Delete' || k === 'Backspace') {
       e.preventDefault();
       clearPoints();
       updateReadout();
     }
-  });
+  }
+  window.addEventListener('keydown', handleKey);
 
   overlay.addEventListener('click', () => {
     startAudio();
