@@ -120,7 +120,7 @@
   <div><kbd>Space</kbd> mute toggle</div>
   <div><kbd>Delete</kbd> remove last point</div>
   <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
-  <div style="margin-top: 6px; opacity: 0.7;">Hand mode: index finger = cursor, pinch = lock</div>
+  <div style="margin-top: 6px; opacity: 0.7;">Hand mode: right index = cursor, left pinch = lock</div>
 </div>
 <div id="readout">
   <div id="freqOut">— Hz</div>
@@ -452,7 +452,7 @@ async function initLandmarker() {
       delegate: 'GPU',
     },
     runningMode: 'VIDEO',
-    numHands: 1,
+    numHands: 2,
   });
   return landmarker;
 }
@@ -525,31 +525,46 @@ function loop() {
   const T = window.__theremin;
   if (!T) return;
   if (result.landmarks && result.landmarks.length > 0) {
-    const lm = result.landmarks[0];
-    // Index fingertip = 8, thumb tip = 4
-    const tip = lm[8];
-    const thumb = lm[4];
-    // Mirror x because the camera CSS is mirrored
-    const nx = 1 - tip.x;
-    const ny = tip.y;
-    const x = Math.max(0, Math.min(1, nx)) * T.W;
-    const y = Math.max(0, Math.min(1, ny)) * T.H;
-    T.setCursor(x, y);
+    // The camera is mirrored via CSS but the model sees the raw frame, so
+    // MediaPipe's "Left"/"Right" labels are flipped relative to the user.
+    let rightHand = null; // user's right hand → cursor
+    let leftHand = null;  // user's left hand → pinch to lock
+    const hands = result.handedness || [];
+    for (let i = 0; i < result.landmarks.length; i++) {
+      const label = hands[i] && hands[i][0] && hands[i][0].categoryName;
+      if (label === 'Right' && !rightHand) rightHand = result.landmarks[i];
+      else if (label === 'Left' && !leftHand) leftHand = result.landmarks[i];
+    }
 
-    // Pinch detection (normalized distance)
-    const dx = thumb.x - tip.x;
-    const dy = thumb.y - tip.y;
-    const dist = Math.hypot(dx, dy);
-    const PINCH_ON = 0.05;
-    const PINCH_OFF = 0.09;
-    if (!pinchDown && dist < PINCH_ON) {
-      pinchDown = true;
-      // debounce: at most one lock per 200ms
-      if (now - lastPinchLockAt > 200) {
-        lastPinchLockAt = now;
-        T.lock();
+    if (rightHand) {
+      const tip = rightHand[8];
+      const nx = 1 - tip.x;
+      const ny = tip.y;
+      const x = Math.max(0, Math.min(1, nx)) * T.W;
+      const y = Math.max(0, Math.min(1, ny)) * T.H;
+      T.setCursor(x, y);
+    } else {
+      T.clearCursor();
+    }
+
+    if (leftHand) {
+      const tip = leftHand[8];
+      const thumb = leftHand[4];
+      const dx = thumb.x - tip.x;
+      const dy = thumb.y - tip.y;
+      const dist = Math.hypot(dx, dy);
+      const PINCH_ON = 0.05;
+      const PINCH_OFF = 0.09;
+      if (!pinchDown && dist < PINCH_ON) {
+        pinchDown = true;
+        if (now - lastPinchLockAt > 200) {
+          lastPinchLockAt = now;
+          T.lock();
+        }
+      } else if (pinchDown && dist > PINCH_OFF) {
+        pinchDown = false;
       }
-    } else if (pinchDown && dist > PINCH_OFF) {
+    } else {
       pinchDown = false;
     }
   } else {
