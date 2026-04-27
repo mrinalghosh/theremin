@@ -76,6 +76,39 @@
     cursor: pointer;
     z-index: 10;
   }
+  #handsBtn {
+    position: fixed;
+    bottom: 12px;
+    right: 16px;
+    background: #1c2230;
+    border: 1px solid #2a3245;
+    border-radius: 6px;
+    padding: 8px 14px;
+    font-size: 13px;
+    color: #cfd6e2;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  #handsBtn:hover { background: #232b3d; }
+  #handsBtn.active {
+    background: #2a4d8a;
+    border-color: #4a78c5;
+    color: #fff;
+  }
+  #cam {
+    position: fixed;
+    bottom: 60px;
+    right: 16px;
+    width: 200px;
+    height: 150px;
+    border-radius: 6px;
+    border: 1px solid #2a3245;
+    transform: scaleX(-1);
+    object-fit: cover;
+    background: #000;
+    display: none;
+  }
+  #cam.visible { display: block; }
 </style>
 </head>
 <body>
@@ -87,6 +120,7 @@
   <div><kbd>Space</kbd> mute toggle</div>
   <div><kbd>Delete</kbd> remove last point</div>
   <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
+  <div style="margin-top: 6px; opacity: 0.7;">Hand mode: index finger = cursor, pinch = lock</div>
 </div>
 <div id="readout">
   <div id="freqOut">— Hz</div>
@@ -95,6 +129,8 @@
   <div id="muteOut"></div>
   <div id="countOut">0 locked</div>
 </div>
+<video id="cam" autoplay playsinline muted></video>
+<button id="handsBtn">Hands: off</button>
 <div id="overlay">click anywhere to start</div>
 
 <script>
@@ -111,6 +147,8 @@
   const waveOut = document.getElementById('waveOut');
   const muteOut = document.getElementById('muteOut');
   const overlay = document.getElementById('overlay');
+  const handsBtn = document.getElementById('handsBtn');
+  const cam = document.getElementById('cam');
 
   let W = 0, H = 0;
   function resize() {
@@ -286,7 +324,9 @@
     muteOut.style.color = '#ff7e7e';
   }
 
+  let handsActive = false;
   window.addEventListener('mousemove', e => {
+    if (handsActive) return;
     mouseX = e.clientX;
     mouseY = e.clientY;
     mouseInside = true;
@@ -294,11 +334,13 @@
     updateReadout();
   });
   window.addEventListener('mouseleave', () => {
+    if (handsActive) return;
     mouseInside = false;
     updateLive();
     updateReadout();
   });
   window.addEventListener('mouseenter', () => {
+    if (handsActive) return;
     mouseInside = true;
     updateLive();
     updateReadout();
@@ -350,7 +392,178 @@
     lockPoint();
     updateReadout();
   });
+
+  // Bridge for the hand-tracking module
+  window.__theremin = {
+    setCursor(x, y) {
+      mouseX = x;
+      mouseY = y;
+      mouseInside = true;
+      updateLive();
+      updateReadout();
+    },
+    clearCursor() {
+      mouseInside = false;
+      updateLive();
+      updateReadout();
+    },
+    lock() {
+      lockPoint();
+      updateReadout();
+    },
+    deleteLast() {
+      deleteLastPoint();
+      updateReadout();
+    },
+    hasAudio() { return !!audioCtx; },
+    setHandsActive(v) { handsActive = !!v; },
+    get W() { return W; },
+    get H() { return H; },
+  };
 })();
+</script>
+
+<script type="module">
+import { HandLandmarker, FilesetResolver }
+  from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+
+const handsBtn = document.getElementById('handsBtn');
+const cam = document.getElementById('cam');
+
+let landmarker = null;
+let stream = null;
+let active = false;
+let busy = false;
+let rafId = null;
+let pinchDown = false;
+let lastPinchLockAt = 0;
+let lastTimestamp = 0;
+
+async function initLandmarker() {
+  if (landmarker) return landmarker;
+  handsBtn.textContent = 'loading…';
+  const resolver = await FilesetResolver.forVisionTasks(
+    'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+  );
+  landmarker = await HandLandmarker.createFromOptions(resolver, {
+    baseOptions: {
+      modelAssetPath:
+        'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+      delegate: 'GPU',
+    },
+    runningMode: 'VIDEO',
+    numHands: 1,
+  });
+  return landmarker;
+}
+
+async function startHands() {
+  if (!window.__theremin || !window.__theremin.hasAudio()) {
+    alert('Click anywhere to start audio first.');
+    return;
+  }
+  busy = true;
+  handsBtn.disabled = true;
+  try {
+    await initLandmarker();
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' },
+      audio: false,
+    });
+  } catch (err) {
+    alert('Could not start hand tracking: ' + err.message);
+    handsBtn.textContent = 'Hands: off';
+    busy = false;
+    handsBtn.disabled = false;
+    return;
+  }
+  cam.srcObject = stream;
+  cam.classList.add('visible');
+  try { await cam.play(); } catch (_) {}
+  active = true;
+  window.__theremin.setHandsActive(true);
+  handsBtn.classList.add('active');
+  handsBtn.textContent = 'Hands: on';
+  busy = false;
+  handsBtn.disabled = false;
+  lastTimestamp = 0;
+  loop();
+}
+
+function stopHands() {
+  active = false;
+  if (rafId) cancelAnimationFrame(rafId);
+  rafId = null;
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  cam.srcObject = null;
+  cam.classList.remove('visible');
+  handsBtn.classList.remove('active');
+  handsBtn.textContent = 'Hands: off';
+  if (window.__theremin) {
+    window.__theremin.setHandsActive(false);
+    window.__theremin.clearCursor();
+  }
+  pinchDown = false;
+}
+
+function loop() {
+  if (!active) return;
+  rafId = requestAnimationFrame(loop);
+  if (cam.readyState < 2) return;
+  let now = performance.now();
+  if (now <= lastTimestamp) now = lastTimestamp + 1;
+  lastTimestamp = now;
+  let result;
+  try {
+    result = landmarker.detectForVideo(cam, now);
+  } catch (_) {
+    return;
+  }
+  const T = window.__theremin;
+  if (!T) return;
+  if (result.landmarks && result.landmarks.length > 0) {
+    const lm = result.landmarks[0];
+    // Index fingertip = 8, thumb tip = 4
+    const tip = lm[8];
+    const thumb = lm[4];
+    // Mirror x because the camera CSS is mirrored
+    const nx = 1 - tip.x;
+    const ny = tip.y;
+    const x = Math.max(0, Math.min(1, nx)) * T.W;
+    const y = Math.max(0, Math.min(1, ny)) * T.H;
+    T.setCursor(x, y);
+
+    // Pinch detection (normalized distance)
+    const dx = thumb.x - tip.x;
+    const dy = thumb.y - tip.y;
+    const dist = Math.hypot(dx, dy);
+    const PINCH_ON = 0.05;
+    const PINCH_OFF = 0.09;
+    if (!pinchDown && dist < PINCH_ON) {
+      pinchDown = true;
+      // debounce: at most one lock per 200ms
+      if (now - lastPinchLockAt > 200) {
+        lastPinchLockAt = now;
+        T.lock();
+      }
+    } else if (pinchDown && dist > PINCH_OFF) {
+      pinchDown = false;
+    }
+  } else {
+    T.clearCursor();
+    pinchDown = false;
+  }
+}
+
+handsBtn.addEventListener('click', () => {
+  if (busy) return;
+  handsBtn.blur();
+  if (active) stopHands();
+  else startHands();
+});
 </script>
 </body>
 </html>
