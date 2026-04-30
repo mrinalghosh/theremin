@@ -76,10 +76,9 @@
     cursor: pointer;
     z-index: 10;
   }
-  #handsBtn {
+  #handsBtn, #arpBtn {
     position: fixed;
     bottom: 12px;
-    right: 16px;
     background: #1c2230;
     border: 1px solid #2a3245;
     border-radius: 6px;
@@ -89,10 +88,17 @@
     cursor: pointer;
     font-family: inherit;
   }
-  #handsBtn:hover { background: #232b3d; }
+  #handsBtn { right: 16px; }
+  #arpBtn { right: 130px; }
+  #handsBtn:hover, #arpBtn:hover { background: #232b3d; }
   #handsBtn.active {
     background: #2a4d8a;
     border-color: #4a78c5;
+    color: #fff;
+  }
+  #arpBtn.active {
+    background: #8a4d2a;
+    border-color: #c5784a;
     color: #fff;
   }
   #cam {
@@ -120,6 +126,7 @@
   <div><kbd>Space</kbd> mute toggle</div>
   <div><kbd>Delete</kbd> remove last point</div>
   <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
+  <div><kbd>A</kbd> arpeggiator toggle</div>
   <div style="margin-top: 6px; opacity: 0.7;">Hand mode: right index = cursor, left pinch = lock</div>
 </div>
 <div id="readout">
@@ -130,6 +137,7 @@
   <div id="countOut">0 locked</div>
 </div>
 <video id="cam" autoplay playsinline muted></video>
+<button id="arpBtn">Arp: off</button>
 <button id="handsBtn">Hands: off</button>
 <div id="overlay">click anywhere to start</div>
 
@@ -148,6 +156,7 @@
   const muteOut = document.getElementById('muteOut');
   const overlay = document.getElementById('overlay');
   const handsBtn = document.getElementById('handsBtn');
+  const arpBtn = document.getElementById('arpBtn');
   const cam = document.getElementById('cam');
 
   let W = 0, H = 0;
@@ -224,7 +233,7 @@
   function updateLive() {
     if (!audioCtx) return;
     const targetFreq = xToFreq(mouseX);
-    const targetGain = mouseInside ? yToGain(mouseY) : 0;
+    const targetGain = (mouseInside && !arpActive) ? yToGain(mouseY) : 0;
     const t = audioCtx.currentTime;
     liveOsc.frequency.setTargetAtTime(targetFreq, t, 0.01);
     liveGain.gain.setTargetAtTime(targetGain, t, 0.02);
@@ -239,7 +248,7 @@
     osc.type = type;
     osc.frequency.value = freq;
     const g = audioCtx.createGain();
-    g.gain.value = gain;
+    g.gain.value = arpActive ? 0 : gain;
     osc.connect(g);
     g.connect(masterGain);
     osc.start();
@@ -255,7 +264,83 @@
     try { p.osc.stop(t); } catch (_) {}
     try { p.osc.disconnect(); } catch (_) {}
     try { p.gainNode.disconnect(); } catch (_) {}
+    if (arpActive && lockedPoints.length === 0) stopArp();
   }
+
+  let arpActive = false;
+  let arpTimer = null;
+  let arpIndex = 0;
+  const ARP_STEP_MS = 250;
+  const ARP_NOTE_MS = 200;
+
+  function arpStep() {
+    if (!arpActive || !audioCtx || lockedPoints.length === 0) return;
+    arpIndex = arpIndex % lockedPoints.length;
+    const p = lockedPoints[arpIndex];
+    const t = audioCtx.currentTime;
+    const attack = 0.01;
+    const release = 0.05;
+    const noteDur = ARP_NOTE_MS / 1000;
+    try {
+      p.gainNode.gain.cancelScheduledValues(t);
+      p.gainNode.gain.setValueAtTime(0, t);
+      p.gainNode.gain.linearRampToValueAtTime(p.gain, t + attack);
+      p.gainNode.gain.setValueAtTime(p.gain, t + noteDur);
+      p.gainNode.gain.linearRampToValueAtTime(0, t + noteDur + release);
+    } catch (_) {}
+    arpIndex++;
+  }
+
+  function startArp() {
+    if (arpActive || !audioCtx || lockedPoints.length === 0) return;
+    arpActive = true;
+    arpIndex = 0;
+    const tNow = audioCtx.currentTime;
+    for (const p of lockedPoints) {
+      try {
+        p.gainNode.gain.cancelScheduledValues(tNow);
+        p.gainNode.gain.setValueAtTime(0, tNow);
+      } catch (_) {}
+    }
+    arpBtn.classList.add('active');
+    arpBtn.textContent = 'Arp: on';
+    if (liveGain) {
+      try {
+        liveGain.gain.cancelScheduledValues(tNow);
+        liveGain.gain.setTargetAtTime(0, tNow, 0.02);
+      } catch (_) {}
+    }
+    arpStep();
+    arpTimer = setInterval(arpStep, ARP_STEP_MS);
+  }
+
+  function stopArp() {
+    if (!arpActive) return;
+    arpActive = false;
+    if (arpTimer) { clearInterval(arpTimer); arpTimer = null; }
+    arpBtn.classList.remove('active');
+    arpBtn.textContent = 'Arp: off';
+    if (!audioCtx) return;
+    const t = audioCtx.currentTime;
+    for (const p of lockedPoints) {
+      try {
+        p.gainNode.gain.cancelScheduledValues(t);
+        p.gainNode.gain.setTargetAtTime(p.gain, t, 0.02);
+      } catch (_) {}
+    }
+    updateLive();
+  }
+
+  function toggleArp() {
+    if (arpActive) stopArp();
+    else startArp();
+  }
+
+  arpBtn.addEventListener('click', () => {
+    arpBtn.blur();
+    if (!audioCtx) return;
+    toggleArp();
+  });
 
   function draw() {
     ctx.clearRect(0, 0, W, H);
@@ -365,6 +450,9 @@
       e.preventDefault();
       deleteLastPoint();
       updateReadout();
+    } else if (k === 'a' || k === 'A') {
+      e.preventDefault();
+      if (audioCtx) toggleArp();
     } else if (k >= '1' && k <= '4') {
       e.preventDefault();
       const idx = parseInt(k, 10) - 1;
