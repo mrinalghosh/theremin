@@ -103,18 +103,20 @@
   }
   #cam {
     position: fixed;
-    bottom: 60px;
-    right: 16px;
-    width: 200px;
-    height: 150px;
-    border-radius: 6px;
-    border: 1px solid #2a3245;
+    inset: 0;
+    width: 100%;
+    height: 100%;
     transform: scaleX(-1);
-    object-fit: cover;
+    object-fit: fill;
     background: #000;
     display: none;
+    opacity: 0.18;
+    pointer-events: none;
+    z-index: 0;
   }
   #cam.visible { display: block; }
+  #stage { z-index: 1; }
+  #xLabel, #yLabel, #readout, #help, #handsBtn, #arpBtn, #overlay { z-index: 2; }
 </style>
 </head>
 <body>
@@ -127,7 +129,7 @@
   <div><kbd>Delete</kbd> remove last point</div>
   <div><kbd>1</kbd> sine  <kbd>2</kbd> square  <kbd>3</kbd> saw  <kbd>4</kbd> triangle</div>
   <div><kbd>A</kbd> arpeggiator toggle</div>
-  <div style="margin-top: 6px; opacity: 0.7;">Hand mode: right index = cursor, left pinch = lock</div>
+  <div style="margin-top: 6px; opacity: 0.7;">Hand mode: right index = cursor, left pinch = lock, right fist = arp</div>
 </div>
 <div id="readout">
   <div id="freqOut">— Hz</div>
@@ -503,6 +505,10 @@
       deleteLastPoint();
       updateReadout();
     },
+    toggleArp() {
+      if (!audioCtx) return;
+      toggleArp();
+    },
     hasAudio() { return !!audioCtx; },
     setHandsActive(v) { handsActive = !!v; },
     get W() { return W; },
@@ -525,7 +531,23 @@ let busy = false;
 let rafId = null;
 let pinchDown = false;
 let lastPinchLockAt = 0;
+let fistDown = false;
+let lastFistToggleAt = 0;
 let lastTimestamp = 0;
+
+function isFist(lm) {
+  const wrist = lm[0];
+  const tipsAndPips = [[8, 6], [12, 10], [16, 14], [20, 18]];
+  let curled = 0;
+  for (const [tipIdx, pipIdx] of tipsAndPips) {
+    const tip = lm[tipIdx];
+    const pip = lm[pipIdx];
+    const dTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+    const dPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+    if (dTip < dPip * 1.05) curled++;
+  }
+  return curled >= 4;
+}
 
 async function initLandmarker() {
   if (landmarker) return landmarker;
@@ -595,6 +617,7 @@ function stopHands() {
     window.__theremin.clearCursor();
   }
   pinchDown = false;
+  fistDown = false;
 }
 
 function loop() {
@@ -625,13 +648,24 @@ function loop() {
     }
 
     if (rightHand) {
-      const tip = rightHand[8];
-      const nx = 1 - tip.x;
-      const ny = tip.y;
-      const x = Math.max(0, Math.min(1, nx)) * T.W;
-      const y = Math.max(0, Math.min(1, ny)) * T.H;
-      T.setCursor(x, y);
+      const fist = isFist(rightHand);
+      if (fist) {
+        if (!fistDown && now - lastFistToggleAt > 600) {
+          fistDown = true;
+          lastFistToggleAt = now;
+          T.toggleArp();
+        }
+      } else {
+        if (fistDown) fistDown = false;
+        const tip = rightHand[8];
+        const nx = 1 - tip.x;
+        const ny = tip.y;
+        const x = Math.max(0, Math.min(1, nx)) * T.W;
+        const y = Math.max(0, Math.min(1, ny)) * T.H;
+        T.setCursor(x, y);
+      }
     } else {
+      fistDown = false;
       T.clearCursor();
     }
 
@@ -658,6 +692,7 @@ function loop() {
   } else {
     T.clearCursor();
     pinchDown = false;
+    fistDown = false;
   }
 }
 
