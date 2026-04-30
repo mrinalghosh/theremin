@@ -107,7 +107,7 @@
     width: 100%;
     height: 100%;
     transform: scaleX(-1);
-    object-fit: fill;
+    object-fit: cover;
     background: #000;
     display: none;
     opacity: 0.18;
@@ -658,10 +658,17 @@ function loop() {
       } else {
         if (fistDown) fistDown = false;
         const tip = rightHand[8];
-        const nx = 1 - tip.x;
-        const ny = tip.y;
-        const x = Math.max(0, Math.min(1, nx)) * T.W;
-        const y = Math.max(0, Math.min(1, ny)) * T.H;
+        const vw = cam.videoWidth || 640;
+        const vh = cam.videoHeight || 480;
+        const scale = Math.max(T.W / vw, T.H / vh);
+        const dispW = vw * scale;
+        const dispH = vh * scale;
+        const offX = (T.W - dispW) / 2;
+        const offY = (T.H - dispH) / 2;
+        const rawX = offX + (1 - tip.x) * dispW;
+        const rawY = offY + tip.y * dispH;
+        const x = Math.max(0, Math.min(T.W, rawX));
+        const y = Math.max(0, Math.min(T.H, rawY));
         T.setCursor(x, y);
       }
     } else {
